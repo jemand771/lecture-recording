@@ -4,9 +4,11 @@ on:
   push:
     paths:
       - "recording-image/**"
+      - ".github/workflows/build-recorder.yml"
   pull_request:
     paths:
       - "recording-image/**"
+      - ".github/workflows/build-recorder.yml"
   workflow_dispatch:
 
 
