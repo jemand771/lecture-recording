@@ -4,7 +4,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends software-properties-common && \
     add-apt-repository ppa:obsproject/obs-studio && \
     apt-get update && \
-    apt-get install -y --no-install-recommends obs-studio && \
+    DEBIAN_FRONTEND="noninteractive" apt-get install -y --no-install-recommends obs-studio tzdata && \
     apt-get clean -y
 
 RUN echo "?package(bash):needs=\"X11\" section=\"DockerCustom\" title=\"OBS Screencast\" command=\"obs\"" >> /usr/share/menu/custom-docker && update-menus
