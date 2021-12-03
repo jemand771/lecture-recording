@@ -20,17 +20,24 @@ class JumpcutterParams:
     threshold: float
     silent_speed: float
     sounded_speed: float
-    frame_margin: float = 1.0
+    frame_margin: int = 1
     frame_quality: int = 3
+
+    @property
+    def speed_array(self):
+        """Return a list of silent, sounded speed.
+
+        This can be used like speed_array[is_sounded]"""
+        return [self.silent_speed, self.sounded_speed]
 
 
 class Jumpcutter:
     # smooth out transitiion's audio by quickly fading in/out (arbitrary magic number whatever)
     AUDIO_FADE_ENVELOPE_SIZE = 400
 
-    def __init__(self, input_file, settings: JumpcutterParams):
+    def __init__(self, input_file, params: JumpcutterParams):
         self._input_file = input_file
-        self._settings = settings
+        self._params = params
         self._temp_dir = TemporaryDirectory()
         self._temp = pathlib.Path(self._temp_dir.name)
 
@@ -41,11 +48,12 @@ class Jumpcutter:
     # TODO determine frame count in advance -> maybe longer %06d
     def split_input_video(self):
         xprint("====> splitting input video")
-        command = ["ffmpeg", "-hide_banner", "-i", INPUT_FILE, "-qscale:v", str(FRAME_QUALITY),
+        command = ["ffmpeg", "-hide_banner", "-i", self._input_file, "-qscale:v", str(self._params.frame_quality),
                    self._temp / "frame%06d.jpg"]
         subprocess.call(command, shell=False)
 
-        command = ["ffmpeg", "-hide_banner", "-i", INPUT_FILE, "-ab", "160k", "-ac", "2", "-ar", str(SAMPLE_RATE),
+        command = ["ffmpeg", "-hide_banner", "-i", self._input_file, "-ab", "160k", "-ac", "2", "-ar",
+                   str(self._params.sample_rate),
                    "-vn",
                    self._temp / "audio.wav"]
         subprocess.call(command, shell=False)
@@ -56,7 +64,7 @@ class Jumpcutter:
         audioSampleCount = audioData.shape[0]
         maxAudioVolume = self._calculate_max_volume(audioData)
 
-        samplesPerFrame = sampleRate / frameRate
+        samplesPerFrame = sampleRate / self._params.frame_rate
 
         audioFrameCount = int(math.ceil(audioSampleCount / samplesPerFrame))
 
@@ -67,14 +75,14 @@ class Jumpcutter:
             end = min(int((i + 1) * samplesPerFrame), audioSampleCount)
             audiochunks = audioData[start:end]
             maxchunksVolume = float(self._calculate_max_volume(audiochunks)) / maxAudioVolume
-            if maxchunksVolume >= SILENT_THRESHOLD:
+            if maxchunksVolume >= self._params.threshold:
                 hasLoudAudio[i] = 1
 
         chunks = [[0, 0, 0]]
         shouldIncludeFrame = np.zeros((audioFrameCount))
         for i in range(audioFrameCount):
-            start = int(max(0, i - FRAME_SPREADAGE))
-            end = int(min(audioFrameCount, i + 1 + FRAME_SPREADAGE))
+            start = int(max(0, i - self._params.frame_margin))
+            end = int(min(audioFrameCount, i + 1 + self._params.frame_margin))
             shouldIncludeFrame[i] = np.max(hasLoudAudio[start:end])
             if (i >= 1 and shouldIncludeFrame[i] != shouldIncludeFrame[i - 1]):  # Did we flip?
                 chunks.append([chunks[-1][1], i, shouldIncludeFrame[i - 1]])
@@ -93,10 +101,14 @@ class Jumpcutter:
 
             sFile = str(self._temp / "tempStart.wav")
             eFile = str(self._temp / "tempEnd.wav")
-            wavfile.write(sFile, SAMPLE_RATE, audioChunk)
+            wavfile.write(sFile, self._params.sample_rate, audioChunk)
             with WavReader(sFile) as reader:
                 with WavWriter(eFile, reader.channels, reader.samplerate) as writer:
-                    tsm = phasevocoder(reader.channels, speed=NEW_SPEED[int(chunk[2])])
+                    # TODO make this array thing sexy (currently duplicate)
+                    tsm = phasevocoder(
+                        reader.channels,
+                        speed=self._params.speed_array[int(chunk[2])]
+                    )
                     tsm.run(reader, writer)
             _, alteredAudioData = wavfile.read(eFile)
             leng = alteredAudioData.shape[0]
@@ -118,7 +130,7 @@ class Jumpcutter:
             startOutputFrame = int(math.ceil(outputPointer / samplesPerFrame))
             endOutputFrame = int(math.ceil(endPointer / samplesPerFrame))
             for outputFrame in range(startOutputFrame, endOutputFrame):
-                inputFrame = int(chunk[0] + NEW_SPEED[int(chunk[2])] * (outputFrame - startOutputFrame))
+                inputFrame = int(chunk[0] + self._params.speed_array[int(chunk[2])] * (outputFrame - startOutputFrame))
                 didItWork = self.copyFrame(inputFrame, outputFrame)
                 if didItWork:
                     lastExistingFrame = inputFrame
@@ -131,9 +143,9 @@ class Jumpcutter:
     def render_output(self, outputAudioData):
         xprint("====> rendering output video")
 
-        wavfile.write(self._temp / "audioNew.wav", SAMPLE_RATE, outputAudioData)
+        wavfile.write(self._temp / "audioNew.wav", self._params.sample_rate, outputAudioData)
 
-        command = ["ffmpeg", "-y", "-hide_banner", "-framerate", str(frameRate), "-i",
+        command = ["ffmpeg", "-y", "-hide_banner", "-framerate", str(self._params.frame_rate), "-i",
                    self._temp / "newFrame%06d.jpg", "-i",
                    self._temp / "audioNew.wav", "-strict", "-2", self._input_to_output(self._input_file)]
         subprocess.call(command, shell=False)
@@ -166,21 +178,11 @@ class Jumpcutter:
         self.render_output(output_audio_data)
 
 
-
-# TODO input these
-frameRate = 15
-SAMPLE_RATE = 48000
-SILENT_THRESHOLD = 0.05
-FRAME_SPREADAGE = 1
-NEW_SPEED = [999999, 1]  # silent, sounded
-INPUT_FILE = "input.mkv"
-FRAME_QUALITY = 3
-
-
 def xprint(msg):
     import sys
     print(msg, flush=True)
     print(msg, file=sys.stderr, flush=True)
+
 
 params = JumpcutterParams(
     threshold=0.05,
