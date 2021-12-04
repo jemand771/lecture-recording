@@ -1,3 +1,4 @@
+import itertools
 import pathlib
 from dataclasses import dataclass
 import subprocess
@@ -58,37 +59,53 @@ class Jumpcutter:
                    self._temp / "audio.wav"]
         subprocess.call(command, shell=False)
 
-    # TODO understand this
+    @staticmethod
+    def _perform_frame_margin(include_frame, margin):
+        return [
+            any(
+                include_frame[
+                    max(0, i - margin)
+                    # this is +1 because slicing i:i yields []
+                    :min(len(include_frame), i + 1 + margin)
+                ]
+            )
+            for i in range(len(include_frame))
+        ]
+
+    @staticmethod
+    def _audio_chunks_from_frames(include_frame):
+        chunks = []
+        start = 0
+        for val, group in itertools.groupby(include_frame):
+            length = len(list(group))
+            chunks.append([start, start + length, val])
+            start += length
+        return chunks
+
     def initial_audio_stuff(self):
-        sampleRate, audioData = wavfile.read(self._temp / "audio.wav")
-        audioSampleCount = audioData.shape[0]
-        maxAudioVolume = self._calculate_max_volume(audioData)
+        # while this gives us the sample rate, we can also use the one provided as an input param
+        # since it's forced to be that by the wav-writing ffmpeg command
+        # TODO I'm not 100% happy with this yet, needs more splitting
+        _, audio_data = wavfile.read(self._temp / "audio.wav")
+        num_audio_samples = audio_data.shape[0]
+        max_volume = self._calculate_max_volume(audio_data)
+        samples_per_frame = self._params.sample_rate / self._params.frame_rate
+        num_audio_frames = int(math.ceil(num_audio_samples / samples_per_frame))
 
-        samplesPerFrame = sampleRate / self._params.frame_rate
+        # iterate the audio that each frame has and determine if it's sounded
+        is_frame_sounded = [False] * num_audio_frames
+        for i in range(num_audio_frames):
+            start = int(i * samples_per_frame)
+            end = min(int((i + 1) * samples_per_frame), num_audio_samples)
+            if self._calculate_max_volume(audio_data[start:end]) / max_volume >= self._params.threshold:
+                is_frame_sounded[i] = True
 
-        audioFrameCount = int(math.ceil(audioSampleCount / samplesPerFrame))
+        # apply frame margin
+        include_frame = self._perform_frame_margin(is_frame_sounded, self._params.frame_margin)
+        # detect edges (flips)
+        chunks = self._audio_chunks_from_frames(include_frame)
 
-        hasLoudAudio = np.zeros((audioFrameCount))
-
-        for i in range(audioFrameCount):
-            start = int(i * samplesPerFrame)
-            end = min(int((i + 1) * samplesPerFrame), audioSampleCount)
-            audiochunks = audioData[start:end]
-            maxchunksVolume = float(self._calculate_max_volume(audiochunks)) / maxAudioVolume
-            if maxchunksVolume >= self._params.threshold:
-                hasLoudAudio[i] = 1
-
-        chunks = [[0, 0, 0]]
-        shouldIncludeFrame = np.zeros((audioFrameCount))
-        for i in range(audioFrameCount):
-            start = int(max(0, i - self._params.frame_margin))
-            end = int(min(audioFrameCount, i + 1 + self._params.frame_margin))
-            shouldIncludeFrame[i] = np.max(hasLoudAudio[start:end])
-            if (i >= 1 and shouldIncludeFrame[i] != shouldIncludeFrame[i - 1]):  # Did we flip?
-                chunks.append([chunks[-1][1], i, shouldIncludeFrame[i - 1]])
-
-        chunks.append([chunks[-1][1], audioFrameCount, shouldIncludeFrame[i - 1]])
-        return chunks[1:], audioData, samplesPerFrame, maxAudioVolume
+        return chunks, audio_data, samples_per_frame, max_volume
 
     def rearrange_frames(self, chunks, audioData, samplesPerFrame, maxAudioVolume):
         xprint("====> rearranging frames")
