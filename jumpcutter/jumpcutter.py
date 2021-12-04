@@ -31,6 +31,18 @@ class JumpcutterParams:
         This can be used like speed_array[is_sounded]"""
         return [self.silent_speed, self.sounded_speed]
 
+    @property
+    def samples_per_frame(self):
+        return self.sample_rate / self.frame_rate
+
+
+@dataclass
+class AudioInfo:
+    audio_data: list
+    max_volume: float
+    num_samples: int
+    num_frames: int
+
 
 class Jumpcutter:
     # smooth out transitiion's audio by quickly fading in/out (arbitrary magic number whatever)
@@ -59,14 +71,35 @@ class Jumpcutter:
                    self._temp / "audio.wav"]
         subprocess.call(command, shell=False)
 
+    def _load_audio_info(self):
+        _, audio_data = wavfile.read(self._temp / "audio.wav")
+        num_audio_samples = audio_data.shape[0]
+        num_audio_frames = int(math.ceil(num_audio_samples / self._params.samples_per_frame))
+        return AudioInfo(
+            audio_data=audio_data,
+            num_samples=num_audio_samples,
+            max_volume=self._calculate_max_volume(audio_data),
+            num_frames=num_audio_frames
+        )
+
+    def _find_sounded_frames(self, audio_info):
+        is_frame_sounded = [False] * audio_info.num_frames
+        for i in range(audio_info.num_frames):
+            start = int(i * self._params.samples_per_frame)
+            end = min(int((i + 1) * self._params.samples_per_frame), audio_info.num_samples)
+            if self._calculate_max_volume(
+                    audio_info.audio_data[start:end]) / audio_info.max_volume >= self._params.threshold:
+                is_frame_sounded[i] = True
+        return is_frame_sounded
+
     @staticmethod
-    def _perform_frame_margin(include_frame, margin):
+    def _apply_frame_margin(include_frame, margin):
         return [
             any(
                 include_frame[
-                    max(0, i - margin)
-                    # this is +1 because slicing i:i yields []
-                    :min(len(include_frame), i + 1 + margin)
+                max(0, i - margin)
+                # this is +1 because slicing i:i yields []
+                :min(len(include_frame), i + 1 + margin)
                 ]
             )
             for i in range(len(include_frame))
@@ -82,39 +115,23 @@ class Jumpcutter:
             start += length
         return chunks
 
-    def initial_audio_stuff(self):
-        # while this gives us the sample rate, we can also use the one provided as an input param
-        # since it's forced to be that by the wav-writing ffmpeg command
-        # TODO I'm not 100% happy with this yet, needs more splitting
-        _, audio_data = wavfile.read(self._temp / "audio.wav")
-        num_audio_samples = audio_data.shape[0]
-        max_volume = self._calculate_max_volume(audio_data)
-        samples_per_frame = self._params.sample_rate / self._params.frame_rate
-        num_audio_frames = int(math.ceil(num_audio_samples / samples_per_frame))
+    def analyze_audio(self, audio_info):
+        return self._audio_chunks_from_frames(
+            self._apply_frame_margin(
+                self._find_sounded_frames(audio_info),
+                self._params.frame_margin
+            )
+        )
 
-        # iterate the audio that each frame has and determine if it's sounded
-        is_frame_sounded = [False] * num_audio_frames
-        for i in range(num_audio_frames):
-            start = int(i * samples_per_frame)
-            end = min(int((i + 1) * samples_per_frame), num_audio_samples)
-            if self._calculate_max_volume(audio_data[start:end]) / max_volume >= self._params.threshold:
-                is_frame_sounded[i] = True
-
-        # apply frame margin
-        include_frame = self._perform_frame_margin(is_frame_sounded, self._params.frame_margin)
-        # detect edges (flips)
-        chunks = self._audio_chunks_from_frames(include_frame)
-
-        return chunks, audio_data, samples_per_frame, max_volume
-
-    def rearrange_frames(self, chunks, audioData, samplesPerFrame, maxAudioVolume):
+    def rearrange_frames(self, chunks, audio_info):
         xprint("====> rearranging frames")
-        outputAudioData = np.zeros((0, audioData.shape[1]))
+        outputAudioData = np.zeros((0, audio_info.audio_data.shape[1]))
         outputPointer = 0
 
         lastExistingFrame = None
         for chunk in chunks:
-            audioChunk = audioData[int(chunk[0] * samplesPerFrame):int(chunk[1] * samplesPerFrame)]
+            audioChunk = audio_info.audio_data[
+                         int(chunk[0] * self._params.samples_per_frame):int(chunk[1] * self._params.samples_per_frame)]
 
             sFile = str(self._temp / "tempStart.wav")
             eFile = str(self._temp / "tempEnd.wav")
@@ -130,7 +147,7 @@ class Jumpcutter:
             _, alteredAudioData = wavfile.read(eFile)
             leng = alteredAudioData.shape[0]
             endPointer = outputPointer + leng
-            outputAudioData = np.concatenate((outputAudioData, alteredAudioData / maxAudioVolume))
+            outputAudioData = np.concatenate((outputAudioData, alteredAudioData / audio_info.max_volume))
 
             # outputAudioData[outputPointer:endPointer] = alteredAudioData/maxAudioVolume
 
@@ -144,8 +161,8 @@ class Jumpcutter:
                 outputAudioData[outputPointer:outputPointer + self.AUDIO_FADE_ENVELOPE_SIZE] *= mask
                 outputAudioData[endPointer - self.AUDIO_FADE_ENVELOPE_SIZE:endPointer] *= 1 - mask
 
-            startOutputFrame = int(math.ceil(outputPointer / samplesPerFrame))
-            endOutputFrame = int(math.ceil(endPointer / samplesPerFrame))
+            startOutputFrame = int(math.ceil(outputPointer / self._params.samples_per_frame))
+            endOutputFrame = int(math.ceil(endPointer / self._params.samples_per_frame))
             for outputFrame in range(startOutputFrame, endOutputFrame):
                 inputFrame = int(chunk[0] + self._params.speed_array[int(chunk[2])] * (outputFrame - startOutputFrame))
                 didItWork = self.copyFrame(inputFrame, outputFrame)
@@ -190,8 +207,9 @@ class Jumpcutter:
 
     def do_everything(self):
         self.split_input_video()
-        stuff = self.initial_audio_stuff()
-        output_audio_data = self.rearrange_frames(*stuff)
+        audio_info = self._load_audio_info()
+        chunks = self.analyze_audio(audio_info)
+        output_audio_data = self.rearrange_frames(chunks, audio_info)
         self.render_output(output_audio_data)
 
 
