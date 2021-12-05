@@ -95,11 +95,8 @@ class Jumpcutter:
     def _apply_frame_margin(include_frame, margin):
         return [
             any(
-                include_frame[
-                max(0, i - margin)
                 # this is +1 because slicing i:i yields []
-                :min(len(include_frame), i + 1 + margin)
-                ]
+                include_frame[max(0, i - margin):min(len(include_frame), i + 1 + margin)]
             )
             for i in range(len(include_frame))
         ]
@@ -123,14 +120,13 @@ class Jumpcutter:
         )
 
     def _warp_audio(self, chunks, audio_info):
-        outputAudioData = np.zeros((0, audio_info.audio_data.shape[1]))
+        output_audio = np.zeros((0, audio_info.audio_data.shape[1]))
         audio_chunks = []
         start = 0
         for chunk in chunks:
-            audio_chunk = audio_info.audio_data[
-                          int(chunk[0] * self._params.samples_per_frame)
-                          :int(chunk[1] * self._params.samples_per_frame)
-                          ]
+            audio_start = int(chunk[0] * self._params.samples_per_frame)
+            audio_end = int(chunk[1] * self._params.samples_per_frame)
+            audio_chunk = audio_info.audio_data[audio_start:audio_end]
 
             sFile = str(self._temp / "tempStart.wav")
             eFile = str(self._temp / "tempEnd.wav")
@@ -143,11 +139,11 @@ class Jumpcutter:
                     )
                     tsm.run(reader, writer)
             _, alteredAudioData = wavfile.read(eFile)
-            outputAudioData = np.concatenate((outputAudioData, alteredAudioData / audio_info.max_volume))
+            output_audio = np.concatenate((output_audio, alteredAudioData / audio_info.max_volume))
             new_start = start + alteredAudioData.shape[0]
             audio_chunks.append([start, new_start])
             start = new_start
-        return outputAudioData, audio_chunks
+        return output_audio, audio_chunks
 
     def _apply_envelopes(self, audio_chunks, audio_data):
         xprint("====> rearranging frames")
@@ -225,14 +221,19 @@ def xprint(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
-params = JumpcutterParams(
-    threshold=0.05,
-    silent_speed=999999,
-    sounded_speed=1,
-    frame_rate=15,
-    sample_rate=48000
-)
+def main():
+    params = JumpcutterParams(
+        threshold=0.05,
+        silent_speed=999999,
+        sounded_speed=1,
+        frame_rate=15,
+        sample_rate=48000
+    )
 
-cutter = Jumpcutter("input.mkv", params)
-cutter.do_everything()
-cutter.cleanup()
+    cutter = Jumpcutter("input.mkv", params)
+    cutter.do_everything()
+    cutter.cleanup()
+
+
+if __name__ == "__main__":
+    main()
