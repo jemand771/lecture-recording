@@ -2,7 +2,6 @@ import itertools
 import pathlib
 from dataclasses import dataclass
 import subprocess
-import sys
 from tempfile import TemporaryDirectory
 
 from audiotsm import phasevocoder
@@ -10,7 +9,7 @@ from audiotsm.io.wav import WavReader, WavWriter
 from scipy.io import wavfile
 import numpy as np
 import math
-from shutil import copyfile, rmtree
+from shutil import copyfile
 import os
 
 
@@ -123,56 +122,61 @@ class Jumpcutter:
             )
         )
 
-    def rearrange_frames(self, chunks, audio_info):
-        xprint("====> rearranging frames")
+    def _warp_audio(self, chunks, audio_info):
         outputAudioData = np.zeros((0, audio_info.audio_data.shape[1]))
-        outputPointer = 0
-
-        lastExistingFrame = None
+        audio_chunks = []
+        start = 0
         for chunk in chunks:
-            audioChunk = audio_info.audio_data[
-                         int(chunk[0] * self._params.samples_per_frame):int(chunk[1] * self._params.samples_per_frame)]
+            audio_chunk = audio_info.audio_data[
+                          int(chunk[0] * self._params.samples_per_frame)
+                          :int(chunk[1] * self._params.samples_per_frame)
+                          ]
 
             sFile = str(self._temp / "tempStart.wav")
             eFile = str(self._temp / "tempEnd.wav")
-            wavfile.write(sFile, self._params.sample_rate, audioChunk)
+            wavfile.write(sFile, self._params.sample_rate, audio_chunk)
             with WavReader(sFile) as reader:
                 with WavWriter(eFile, reader.channels, reader.samplerate) as writer:
-                    # TODO make this array thing sexy (currently duplicate)
                     tsm = phasevocoder(
                         reader.channels,
                         speed=self._params.speed_array[int(chunk[2])]
                     )
                     tsm.run(reader, writer)
             _, alteredAudioData = wavfile.read(eFile)
-            leng = alteredAudioData.shape[0]
-            endPointer = outputPointer + leng
             outputAudioData = np.concatenate((outputAudioData, alteredAudioData / audio_info.max_volume))
+            new_start = start + alteredAudioData.shape[0]
+            audio_chunks.append([start, new_start])
+            start = new_start
+        return outputAudioData, audio_chunks
 
-            # outputAudioData[outputPointer:endPointer] = alteredAudioData/maxAudioVolume
+    def _apply_envelopes(self, audio_chunks, audio_data):
+        xprint("====> rearranging frames")
 
-            # smooth out transitiion's audio by quickly fading in/out
-
-            if leng < self.AUDIO_FADE_ENVELOPE_SIZE:
-                outputAudioData[outputPointer:endPointer] = 0  # audio is less than 0.01 sec, let's just remove it.
+        for start, end in audio_chunks:
+            if end - start < self.AUDIO_FADE_ENVELOPE_SIZE:
+                audio_data[start:end] = 0  # audio is less than 0.01 sec, let's just remove it.
             else:
                 premask = np.arange(self.AUDIO_FADE_ENVELOPE_SIZE) / self.AUDIO_FADE_ENVELOPE_SIZE
                 mask = np.repeat(premask[:, np.newaxis], 2, axis=1)  # make the fade-envelope mask stereo
-                outputAudioData[outputPointer:outputPointer + self.AUDIO_FADE_ENVELOPE_SIZE] *= mask
-                outputAudioData[endPointer - self.AUDIO_FADE_ENVELOPE_SIZE:endPointer] *= 1 - mask
+                audio_data[start:start + self.AUDIO_FADE_ENVELOPE_SIZE] *= mask
+                audio_data[end - self.AUDIO_FADE_ENVELOPE_SIZE:end] *= 1 - mask
+        return audio_data
 
-            startOutputFrame = int(math.ceil(outputPointer / self._params.samples_per_frame))
-            endOutputFrame = int(math.ceil(endPointer / self._params.samples_per_frame))
-            for outputFrame in range(startOutputFrame, endOutputFrame):
-                inputFrame = int(chunk[0] + self._params.speed_array[int(chunk[2])] * (outputFrame - startOutputFrame))
-                didItWork = self.copyFrame(inputFrame, outputFrame)
+    def _rearrange_frames(self, chunks, audio_chunks):
+
+        for (start_in, _, do_include), (start_out, end_out) in zip(chunks, audio_chunks):
+            lastExistingFrame = None
+
+            start_frame = int(math.ceil(start_out / self._params.samples_per_frame))
+            end_frame = int(math.ceil(end_out / self._params.samples_per_frame))
+            for outputFrame in range(start_frame, end_frame):
+                input_frame = int(start_in + self._params.speed_array[int(do_include)] * (outputFrame - start_frame))
+                didItWork = self.copyFrame(input_frame, outputFrame)
+                # TODO what's this?
                 if didItWork:
-                    lastExistingFrame = inputFrame
+                    lastExistingFrame = input_frame
                 else:
                     self.copyFrame(lastExistingFrame, outputFrame)
-
-            outputPointer = endPointer
-        return outputAudioData
 
     def render_output(self, outputAudioData):
         xprint("====> rendering output video")
@@ -209,7 +213,9 @@ class Jumpcutter:
         self.split_input_video()
         audio_info = self._load_audio_info()
         chunks = self.analyze_audio(audio_info)
-        output_audio_data = self.rearrange_frames(chunks, audio_info)
+        audio_data, audio_chunks = self._warp_audio(chunks, audio_info)
+        output_audio_data = self._apply_envelopes(audio_chunks, audio_data)
+        self._rearrange_frames(chunks, audio_chunks)
         self.render_output(output_audio_data)
 
 
