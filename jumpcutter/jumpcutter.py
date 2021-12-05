@@ -184,9 +184,15 @@ class Jumpcutter:
                    self._temp / "audioNew.wav", "-strict", "-2", self._input_to_output(self._input_file)]
         subprocess.call(command, shell=False)
 
-    @staticmethod
-    def _input_to_output(input_file):
-        return "out.mkv"
+    def _input_to_output(self, input_file):
+        name, ext = input_file.rsplit(".", 1)
+        return (
+            f"{name}_cut"
+            f"-{self._params.threshold:.2f}"
+            f"-{self._params.sounded_speed}"
+            f"-{self._params.silent_speed}"
+            f".{ext}"
+        )
 
     @staticmethod
     def _calculate_max_volume(audio_data):
