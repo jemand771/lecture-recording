@@ -81,17 +81,28 @@ class Jumpcutter:
                 if output.startswith(b"out_time_ms"):
                     self.notify_progress(out_time_ms=output.decode("utf-8").split("=")[1])
 
+    @property
+    def _temp_input_file_path(self):
+        return self._temp / f"input.{self._input_file.rsplit('.', 1)[-1]}"
+
+    def remux_input_video(self):
+        self.run_ffmpeg([
+            "-i", self._input_file,
+            "-filter:v", f"fps={self._params.frame_rate}",
+            self._temp_input_file_path,
+        ])
+
     # TODO split this method more
     # TODO determine frame count in advance -> maybe longer %06d
     def split_input_video(self):
         self.run_ffmpeg([
-            "-i", self._input_file,
+            "-i", self._temp_input_file_path,
             "-qscale:v", str(self._params.frame_quality),
             self._temp / "frame%06d.jpg"
         ])
 
         self.run_ffmpeg([
-            "-i", self._input_file,
+            "-i", self._temp_input_file_path,
             "-ab", "160k",
             "-ac", "2",
             "-ar", str(self._params.sample_rate),
@@ -294,6 +305,7 @@ class JumpcutterDriver(Jumpcutter):
 
     def do_everything(self):
         self.full_length = self.get_length(self._input_file)
+        self.remux_input_video()
         self.split_input_video()
         audio_info = self._load_audio_info()
         chunks = self.analyze_audio(audio_info)
