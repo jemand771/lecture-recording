@@ -273,14 +273,12 @@ class JumpcutterDriver(Jumpcutter):
             return
         if kwargs.get("next") is True:
             if self.current_job >= 0:
-                # noinspection PyTypeChecker
-                self.job_progress[self.current_job] = 1.0
+                self.notify_progress(progress=1.0)
             self.current_job += 1
             if self.current_job == len(self.job_progress):
                 self.done = True
                 return
-            # noinspection PyTypeChecker
-            self.job_progress[self.current_job] = 0.0
+            self.notify_progress(progress=0.0)
         if isinstance(kwargs.get("progress"), float):
             self.job_progress[self.current_job] = kwargs.get("progress")
             print(self.job_progress)
