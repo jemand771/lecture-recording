@@ -56,19 +56,48 @@ class Jumpcutter:
     def cleanup(self):
         self._temp_dir.cleanup()
 
+    def notify_progress(self, *args, **kwargs):
+        pass
+
+    def run_ffmpeg(self, command):
+        self.notify_progress(next=True)
+        process = subprocess.Popen(
+            [
+                "ffmpeg",
+                "-y",
+                "-hide_banner",
+                "-progress", "pipe:1"
+            ] + command,
+            shell=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        )
+        while True:
+            output = process.stdout.readline()
+            if process.poll() is not None:
+                self.notify_progress(progress=1.0)
+                break  # process is done
+            if output:
+                if output.startswith(b"out_time_ms"):
+                    self.notify_progress(out_time_ms=output.decode("utf-8").split("=")[1])
+
     # TODO split this method more
     # TODO determine frame count in advance -> maybe longer %06d
     def split_input_video(self):
-        xprint("====> splitting input video")
-        command = ["ffmpeg", "-hide_banner", "-i", self._input_file, "-qscale:v", str(self._params.frame_quality),
-                   self._temp / "frame%06d.jpg"]
-        subprocess.call(command, shell=False)
+        self.run_ffmpeg([
+            "-i", self._input_file,
+            "-qscale:v", str(self._params.frame_quality),
+            self._temp / "frame%06d.jpg"
+        ])
 
-        command = ["ffmpeg", "-hide_banner", "-i", self._input_file, "-ab", "160k", "-ac", "2", "-ar",
-                   str(self._params.sample_rate),
-                   "-vn",
-                   self._temp / "audio.wav"]
-        subprocess.call(command, shell=False)
+        self.run_ffmpeg([
+            "-i", self._input_file,
+            "-ab", "160k",
+            "-ac", "2",
+            "-ar", str(self._params.sample_rate),
+            "-vn",
+            self._temp / "audio.wav"
+        ])
 
     def _load_audio_info(self):
         _, audio_data = wavfile.read(self._temp / "audio.wav")
@@ -120,6 +149,7 @@ class Jumpcutter:
         )
 
     def _warp_audio(self, chunks, audio_info):
+        self.notify_progress(next=True)
         output_audio = np.zeros((0, audio_info.audio_data.shape[1]))
         audio_chunks = []
         start = 0
@@ -143,11 +173,10 @@ class Jumpcutter:
             new_start = start + alteredAudioData.shape[0]
             audio_chunks.append([start, new_start])
             start = new_start
+            self.notify_progress(progress=chunk[1]/chunks[-1][1])
         return output_audio, audio_chunks
 
     def _apply_envelopes(self, audio_chunks, audio_data):
-        xprint("====> rearranging frames")
-
         for start, end in audio_chunks:
             if end - start < self.AUDIO_FADE_ENVELOPE_SIZE:
                 audio_data[start:end] = 0  # audio is less than 0.01 sec, let's just remove it.
@@ -159,8 +188,9 @@ class Jumpcutter:
         return audio_data
 
     def _rearrange_frames(self, chunks, audio_chunks):
+        self.notify_progress(next=True)
 
-        for (start_in, _, do_include), (start_out, end_out) in zip(chunks, audio_chunks):
+        for (start_in, end_in, do_include), (start_out, end_out) in zip(chunks, audio_chunks):
             lastExistingFrame = None
 
             start_frame = int(math.ceil(start_out / self._params.samples_per_frame))
@@ -173,16 +203,20 @@ class Jumpcutter:
                     lastExistingFrame = input_frame
                 else:
                     self.copyFrame(lastExistingFrame, outputFrame)
+            self.notify_progress(progress=end_in/chunks[-1][1])
 
-    def render_output(self, outputAudioData):
-        xprint("====> rendering output video")
+    def render_output_wav(self, audio_data):
+        wavfile.write(self._temp / "audioNew.wav", self._params.sample_rate, audio_data)
 
-        wavfile.write(self._temp / "audioNew.wav", self._params.sample_rate, outputAudioData)
-
-        command = ["ffmpeg", "-y", "-hide_banner", "-framerate", str(self._params.frame_rate), "-i",
-                   self._temp / "newFrame%06d.jpg", "-i",
-                   self._temp / "audioNew.wav", "-strict", "-2", self._input_to_output(self._input_file)]
-        subprocess.call(command, shell=False)
+    def render_output(self):
+        self.run_ffmpeg([
+            "-framerate", str(self._params.frame_rate),
+            "-i", self._temp / "newFrame%06d.jpg",
+            "-i", self._temp / "audioNew.wav",
+            "-strict",
+            "-2",
+            self._input_to_output(self._input_file)
+        ])
 
     def _input_to_output(self, input_file):
         name, ext = input_file.rsplit(".", 1)
@@ -207,24 +241,69 @@ class Jumpcutter:
         if not os.path.isfile(src):
             return False
         copyfile(src, dst)
-        if outputFrame % 100 == 99:
-            xprint(str(outputFrame + 1) + " time-altered frames saved.")
         return True
 
+
+class JumpcutterDriver(Jumpcutter):
+    progress_hooks = []
+    job_progress = [None] * 6
+    current_job = -1
+    full_length = None
+    done = False
+    # remux
+    # split input video
+    # load audio
+    # warp audio
+    # rearrange
+    # render
+
+    def notify_progress(self, *args, **kwargs):
+        if self.done:
+            return
+        if kwargs.get("next") is True:
+            if self.current_job >= 0:
+                # noinspection PyTypeChecker
+                self.job_progress[self.current_job] = 1.0
+            self.current_job += 1
+            if self.current_job == len(self.job_progress):
+                self.done = True
+                return
+            # noinspection PyTypeChecker
+            self.job_progress[self.current_job] = 0.0
+        if isinstance(kwargs.get("progress"), float):
+            self.job_progress[self.current_job] = kwargs.get("progress")
+            print(self.job_progress)
+        if isinstance(kwargs.get("out_time_ms"), str):
+            out_time_ms = kwargs.get("out_time_ms")
+            self.notify_progress(progress=round(float(out_time_ms) / 1000)/self.full_length)
+
+    @staticmethod
+    def get_length(input_file):
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_file
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL
+        )
+        return round(float(result.stdout) * 1000)
+
     def do_everything(self):
+        self.full_length = self.get_length(self._input_file)
         self.split_input_video()
         audio_info = self._load_audio_info()
         chunks = self.analyze_audio(audio_info)
         audio_data, audio_chunks = self._warp_audio(chunks, audio_info)
         output_audio_data = self._apply_envelopes(audio_chunks, audio_data)
         self._rearrange_frames(chunks, audio_chunks)
-        self.render_output(output_audio_data)
-
-
-def xprint(msg):
-    import sys
-    print(msg, flush=True)
-    print(msg, file=sys.stderr, flush=True)
+        self.full_length = self.get_length(self._input_file)
+        self.render_output_wav(output_audio_data)
+        self.full_length = self.get_length(self._temp / "audioNew.wav")
+        self.render_output()
 
 
 def main():
@@ -236,7 +315,9 @@ def main():
         sample_rate=48000
     )
 
-    cutter = Jumpcutter("input.mkv", params)
+    cutter = JumpcutterDriver("input.mkv", params)
+    # cutter.full_length = cutter.get_length()
+    # cutter.split_input_video()
     cutter.do_everything()
     cutter.cleanup()
 
