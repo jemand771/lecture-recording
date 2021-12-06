@@ -261,6 +261,7 @@ class JumpcutterDriver(Jumpcutter):
     current_job = -1
     full_length = None
     done = False
+    _data = {}
     # remux
     # split input video
     # load audio
@@ -275,9 +276,6 @@ class JumpcutterDriver(Jumpcutter):
             if self.current_job >= 0:
                 self.notify_progress(progress=1.0)
             self.current_job += 1
-            if self.current_job == len(self.job_progress):
-                self.done = True
-                return
             self.notify_progress(progress=0.0)
         if isinstance(kwargs.get("progress"), float):
             self.job_progress[self.current_job] = kwargs.get("progress")
@@ -301,19 +299,33 @@ class JumpcutterDriver(Jumpcutter):
         )
         return round(float(result.stdout) * 1000)
 
-    def do_everything(self):
-        self.full_length = self.get_length(self._input_file)
-        self.remux_input_video()
-        self.split_input_video()
-        audio_info = self._load_audio_info()
-        chunks = self.analyze_audio(audio_info)
-        audio_data, audio_chunks = self._warp_audio(chunks, audio_info)
-        output_audio_data = self._apply_envelopes(audio_chunks, audio_data)
-        self._rearrange_frames(chunks, audio_chunks)
-        self.full_length = self.get_length(self._input_file)
-        self.render_output_wav(output_audio_data)
-        self.full_length = self.get_length(self._temp / "audioNew.wav")
-        self.render_output()
+    def do_work(self):
+        # this whole function is really fucking ugly but how else am I supposed to
+        # transform my fancy stateless class into this stateful mess?
+        if self.done:
+            return
+        print(self.current_job)
+        if self.current_job == -1:
+            self.full_length = self.get_length(self._input_file)
+            self.remux_input_video()
+        elif self.current_job == 0:
+            self.split_input_video()
+        # splitting the input video counts as two jobs - video and audio
+        elif self.current_job == 2:
+            audio_info = self._load_audio_info()
+            self._data["chunks"] = self.analyze_audio(audio_info)
+            audio_data, self._data["audio_chunks"] = self._warp_audio(self._data["chunks"], audio_info)
+            self._data["output_audio_data"] = self._apply_envelopes(self._data["audio_chunks"], audio_data)
+        elif self.current_job == 3:
+            self._rearrange_frames(self._data["chunks"], self._data["audio_chunks"])
+        elif self.current_job == 4:
+            self.render_output_wav(self._data["output_audio_data"])
+            self.full_length = self.get_length(self._temp / "audioNew.wav")
+            self.render_output()
+            self.cleanup()
+            self.done = True
+        else:
+            raise RuntimeError(f"I don't know what to do for job index {self.current_job + 1}")
 
 
 def main():
@@ -326,10 +338,8 @@ def main():
     )
 
     cutter = JumpcutterDriver("input.mkv", params)
-    # cutter.full_length = cutter.get_length()
-    # cutter.split_input_video()
-    cutter.do_everything()
-    cutter.cleanup()
+    while not cutter.done:
+        cutter.do_work()
 
 
 if __name__ == "__main__":
