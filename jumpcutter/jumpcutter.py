@@ -1,16 +1,18 @@
-import itertools
-import pathlib
+import time
 from dataclasses import dataclass
+import itertools
+import os
+import pathlib
 import subprocess
 from tempfile import TemporaryDirectory
 
 from audiotsm import phasevocoder
 from audiotsm.io.wav import WavReader, WavWriter
-from scipy.io import wavfile
-import numpy as np
+from discord_webhook import DiscordEmbed, DiscordWebhook
 import math
+import numpy as np
+from scipy.io import wavfile
 from shutil import copyfile
-import os
 
 
 @dataclass
@@ -184,7 +186,7 @@ class Jumpcutter:
             new_start = start + alteredAudioData.shape[0]
             audio_chunks.append([start, new_start])
             start = new_start
-            self.notify_progress(progress=chunk[1]/chunks[-1][1])
+            self.notify_progress(progress=chunk[1] / chunks[-1][1])
         return output_audio, audio_chunks
 
     def _apply_envelopes(self, audio_chunks, audio_data):
@@ -214,7 +216,7 @@ class Jumpcutter:
                     lastExistingFrame = input_frame
                 else:
                     self.copyFrame(lastExistingFrame, outputFrame)
-            self.notify_progress(progress=end_in/chunks[-1][1])
+            self.notify_progress(progress=end_in / chunks[-1][1])
 
     def render_output_wav(self, audio_data):
         wavfile.write(self._temp / "audioNew.wav", self._params.sample_rate, audio_data)
@@ -255,6 +257,34 @@ class Jumpcutter:
         return True
 
 
+class ProgressHook:
+    JOB_TITLES = [
+        "Remuxing",
+        "Generating frames",
+        "Extracting audio",
+        "Warping audio",
+        "Arranging frames",
+        "Rendering output"
+    ]
+    last_progress = [
+        {
+            "title": title,
+            "percentage": None
+        }
+        for title
+        in JOB_TITLES
+    ]
+    len_orig = None
+    len_new = None
+
+    def _progress(self, progress_info):
+        pass
+
+    def progress(self, progress_info):
+        self.last_progress = progress_info
+        return self._progress(progress_info)
+
+
 class JumpcutterDriver(Jumpcutter):
     progress_hooks = []
     job_progress = [None] * 6
@@ -262,13 +292,8 @@ class JumpcutterDriver(Jumpcutter):
     full_length = None
     done = False
     _data = {}
-    # remux
-    # split input video
-    # load audio
-    # warp audio
-    # rearrange
-    # render
 
+    # TODO notify for "nothing" before anything happens
     def notify_progress(self, *args, **kwargs):
         if self.done:
             return
@@ -279,10 +304,11 @@ class JumpcutterDriver(Jumpcutter):
             self.notify_progress(progress=0.0)
         if isinstance(kwargs.get("progress"), float):
             self.job_progress[self.current_job] = kwargs.get("progress")
-            print(self.job_progress)
+            for hook in self.progress_hooks:
+                hook.progress(self.job_progress_fmt)
         if isinstance(kwargs.get("out_time_ms"), str):
             out_time_ms = kwargs.get("out_time_ms")
-            self.notify_progress(progress=round(float(out_time_ms) / 1000)/self.full_length)
+            self.notify_progress(progress=round(float(out_time_ms) / 1000) / self.full_length)
 
     @staticmethod
     def get_length(input_file):
@@ -304,9 +330,10 @@ class JumpcutterDriver(Jumpcutter):
         # transform my fancy stateless class into this stateful mess?
         if self.done:
             return
-        print(self.current_job)
         if self.current_job == -1:
             self.full_length = self.get_length(self._input_file)
+            for hook in self.progress_hooks:
+                hook.len_orig = self.full_length
             self.remux_input_video()
         elif self.current_job == 0:
             self.split_input_video()
@@ -321,11 +348,113 @@ class JumpcutterDriver(Jumpcutter):
         elif self.current_job == 4:
             self.render_output_wav(self._data["output_audio_data"])
             self.full_length = self.get_length(self._temp / "audioNew.wav")
+            for hook in self.progress_hooks:
+                hook.len_new = self.full_length
             self.render_output()
             self.cleanup()
             self.done = True
         else:
             raise RuntimeError(f"I don't know what to do for job index {self.current_job + 1}")
+
+    @property
+    def job_progress_fmt(self):
+        return [
+            {
+                "percentage": percentage,
+                "title": title
+            }
+            for percentage, title
+            in zip(
+                self.job_progress,
+                ProgressHook.JOB_TITLES
+            )
+        ]
+
+
+class DiscordHook(ProgressHook):
+
+    def __init__(self, webhook_url):
+        self.hook = DiscordWebhook(webhook_url)
+        self.sent = None
+        self.last_sent = 0.0
+
+    def _progress(self, progress_info):
+        if self.qualify_send(progress_info):
+            embed = self.build_embed(progress_info)
+            self.execute(embed)
+
+    def qualify_send(self, progress_info):
+        if time.time() - self.last_sent > 1:
+            return True
+        perc_arr = [x["percentage"] for x in progress_info]
+        if all(x is None for x in perc_arr):
+            return True
+        if [x for x in perc_arr if x is not None][-1] in (0.0, 1.0):
+            return True
+        return False
+
+    def build_embed(self, progress_info):
+        embed = DiscordEmbed(title="title lol")
+        # TODO add file sizes, compression ratio?
+        embed.add_embed_field(name="Original", value=self.format_duration(self.len_orig))
+        embed.add_embed_field(name="Jumpcut", value=self.format_duration(self.len_new))
+        embed.add_embed_field(name="Progress", value=self.build_progress_content(progress_info), inline=False)
+        embed.set_color(self.get_color([x["percentage"] for x in progress_info]))
+        return embed
+
+    @staticmethod
+    def get_color(percentages):
+        blue = 255
+        red = 255 * 2 ** 16
+        yellow = 256 * (255 + 255 * 256)
+        green = 255 * 256
+        if all(x == 1.0 for x in percentages):
+            return green
+        if all(x is None for x in percentages):
+            return yellow
+        final_progress = [x for x in percentages if x is not None][-1]
+        if final_progress == 1.0:
+            return yellow
+        return blue
+
+    @staticmethod
+    def build_progress_content(progress_info):
+        max_title_len = max(len(x["title"]) for x in progress_info)
+        lines = []
+        for step in progress_info:
+            percent_done = round((step["percentage"] or 0) * 100)
+            lines.append(f"`{percent_done:3} %` {step['title'].ljust(max_title_len)}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def format_duration(duration):
+        if duration is None:
+            return "N/A"
+        return time.strftime("%H:%M:%S", time.gmtime(round(duration / 1000)))
+
+    def execute(self, embed):
+        self.hook.embeds.clear()
+        self.hook.add_embed(embed)
+        if self.sent is None:
+            self.sent = self.hook.execute()
+        else:
+            self.hook.edit(self.sent)
+        self.last_sent = time.time()
+
+
+class StdoutHook(ProgressHook):
+
+    def _progress(self, progress_info):
+        print()
+        max_title_len = max(len(x["title"]) for x in progress_info)
+        for step in progress_info:
+            percent_done = round((step["percentage"] or 0) * 100)
+
+            print(
+                f"{percent_done:3} %"
+                f" {step['title'].ljust(max_title_len)}"
+                f" |{percent_done * '#'}{(100 - percent_done) * ' '}|"
+            )
 
 
 def main():
@@ -338,6 +467,8 @@ def main():
     )
 
     cutter = JumpcutterDriver("input.mkv", params)
+    # cutter.progress_hooks.append(StdoutHook())
+    cutter.progress_hooks.append(DiscordHook(os.environ.get("DISCORD_WEBHOOK")))
     while not cutter.done:
         cutter.do_work()
 
