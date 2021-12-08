@@ -1,0 +1,5 @@
+audiotsm
+discord-webhook
+flask
+numpy
+scipy

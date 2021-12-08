@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block content %}
+    <h2>Input files</h2>
+    <script type="application/javascript">
+        function enqueue(path) {
+            let url = "/enqueue";
+            url += "?path=" + encodeURIComponent(path)
+            fetch(url).then(resp => {
+                return resp.text()
+            }).then(text => {
+                document.open();
+                document.write(text);
+                document.close();
+            });
+        }
+    </script>
+    <table class="table">
+        <thead>
+        <tr>
+            <th scope="col">name</th>
+            <th scope="col">path</th>
+            <th scope="col">actions</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for file in files %}
+            <tr>
+                <td>{{ file["name"] }}</td>
+                <td>{{ file["path"] }}</td>
+                <td>
+                    <button class="btn btn-primary btn-sm" onclick="enqueue('{{ file['path'] }}')">Queue</button>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    <h2>Active Jobs</h2>
+    <table class="table">
+        <thead>
+        <tr>
+            <th scope="col">name</th>
+            <th scope="col">status</th>
+            <th scope="col">approved until</th>
+            <th scope="col">action</th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for job in jobs %}
+            <tr>
+                <td>{{ job["file"]["name"] }}</td>
+                <td>status lol</td>
+                <td>{{ job["work_until"] }}</td>
+                <td>
+                    <form action="/set_until" method="POST">
+                        <input type="hidden" name="id" value="{{ job['id'] }}">
+                        <div class="input-group">
+                            <input type="number" name="number" value="{{ job['work_until'] }}">
+                            <div class="input-group-append">
+                                <button class="btn btn-primary btn-sm" type="submit">Set</button>
+                            </div>
+                        </div>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}

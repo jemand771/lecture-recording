@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+    <h2>Enqueue file</h2>
+    File: {{ info["path"] }}
+    <form method="post" action="/enqueue">
+        <table class="table">
+            <thead>
+            <tr>
+                <th scope="col">Parameter</th>
+                <th scope="col">Value</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr>
+                <td>Volume threshold</td>
+                <td>
+                    <div class="input-group">
+                        <input type="number" name="param-threshold" value="0.05">
+                        <div class="input-group-append"><span class="input-group-text">/1</span></div>
+                    </div>
+                </td>
+            </tr>
+            <tr>
+                <td>Sounded speed</td>
+                <td>
+                    <div class="input-group">
+                        <input type="number" name="param-speed-sounded" value="1">
+                        <div class="input-group-append"><span class="input-group-text">x</span></div>
+                    </div>
+                </td>
+            </tr>
+            <tr>
+                <td>Silent speed</td>
+                <td>
+                    <div class="input-group">
+                        <input type="number" name="param-speed-silent" value="999999">
+                        <div class="input-group-append"><span class="input-group-text">x</span></div>
+                    </div>
+                </td>
+            </tr>
+            <tr>
+                <td>Frame rate</td>
+                <td>
+                    <div class="input-group">
+                        <input type="number" name="param-fps" value="15">
+                        <div class="input-group-append"><span class="input-group-text">FPS</span></div>
+                    </div>
+                </td>
+            </tr>
+            <tr>
+                <td>Sample rate</td>
+                <td>
+                    <div class="input-group">
+                        <input type="number" name="param-sps" value="48000">
+                        <div class="input-group-append"><span class="input-group-text">Samples/s</span></div>
+                    </div>
+                </td>
+            </tr>
+            <tr>
+                <td>Course</td>
+                <td>
+                    <select class="form-select">
+                        <option value="" selected>Please select</option>
+                        {% for course in courses %}
+                            <option value="{{ course }}">{{ course }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+            </tr>
+            </tbody>
+        </table>
+    <input type="hidden" name="path" value="{{ info['path'] }}">
+        <button type="submit" class="btn btn-primary">Add to Queue</button>
+    </form>
+{% endblock %}

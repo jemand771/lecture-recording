@@ -455,23 +455,3 @@ class StdoutHook(ProgressHook):
                 f" {step['title'].ljust(max_title_len)}"
                 f" |{percent_done * '#'}{(100 - percent_done) * ' '}|"
             )
-
-
-def main():
-    params = JumpcutterParams(
-        threshold=0.05,
-        silent_speed=999999,
-        sounded_speed=1,
-        frame_rate=15,
-        sample_rate=48000
-    )
-
-    cutter = JumpcutterDriver("input.mkv", params)
-    # cutter.progress_hooks.append(StdoutHook())
-    cutter.progress_hooks.append(DiscordHook(os.environ.get("DISCORD_WEBHOOK")))
-    while not cutter.done:
-        cutter.do_work()
-
-
-if __name__ == "__main__":
-    main()
