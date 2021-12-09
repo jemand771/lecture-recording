@@ -1,10 +1,10 @@
-import time
 from dataclasses import dataclass
 import itertools
 import os
 import pathlib
 import subprocess
 from tempfile import TemporaryDirectory
+import time
 
 from audiotsm import phasevocoder
 from audiotsm.io.wav import WavReader, WavWriter
@@ -13,6 +13,7 @@ import math
 import numpy as np
 from scipy.io import wavfile
 from shutil import copyfile
+import webdav3.client
 
 
 @dataclass
@@ -228,11 +229,11 @@ class Jumpcutter:
             "-i", self._temp / "audioNew.wav",
             "-strict",
             "-2",
-            self._input_to_output(self._input_file)
+            self._temp / self._input_to_output(self._input_file)
         ])
 
     def _input_to_output(self, input_file):
-        name, ext = input_file.rsplit(".", 1)
+        name, ext = str(pathlib.Path(input_file).name).rsplit(".", 1)
         return (
             f"{name}_cut"
             f"-{self._params.threshold:.2f}"
@@ -264,7 +265,9 @@ class ProgressHook:
         "Extracting audio",
         "Warping audio",
         "Arranging frames",
-        "Rendering output"
+        "Rendering output",
+        "Uploading original",
+        "Uploading result"
     ]
     last_progress = [
         {
@@ -287,11 +290,12 @@ class ProgressHook:
 
 class JumpcutterDriver(Jumpcutter):
     progress_hooks = []
-    job_progress = [None] * 6
+    job_progress = [None] * 8
     current_job = -1
     full_length = None
     done = False
     _data = {}
+    module_dir = None
 
     # TODO notify for "nothing" before anything happens
     def notify_progress(self, *args, **kwargs):
@@ -351,10 +355,43 @@ class JumpcutterDriver(Jumpcutter):
             for hook in self.progress_hooks:
                 hook.len_new = self.full_length
             self.render_output()
+        elif self.current_job == 5:
+            self.do_upload(pathlib.Path(self._input_file))
+        elif self.current_job == 6:
+            self.do_upload(
+                self._temp / self._input_to_output(self._input_file),
+                cut=True
+            )
             self.cleanup()
             self.done = True
         else:
             raise RuntimeError(f"I don't know what to do for job index {self.current_job + 1}")
+
+    def do_upload(self, source, cut=False):
+        self.notify_progress(next=True)
+        target_path = (
+            pathlib.Path(os.environ.get("NEXTCLOUD_FOLDER"))
+        )
+        if cut:
+            target_path /= "_cut"
+        if self.module_dir:
+            target_path /= self.module_dir
+        target_path /= source.name
+        self.get_upload_client().mkdir(str(target_path.parent).replace("\\", "/"))
+        self.get_upload_client().upload_file(
+            local_path=source,
+            remote_path=str(target_path).replace("\\", "/"),
+            progress=lambda current, total: self.notify_progress(progress=current / total)
+        )
+        self.notify_progress(progress=1.0)
+
+    @staticmethod
+    def get_upload_client():
+        return webdav3.client.Client({
+            "webdav_hostname": os.environ.get("NEXTCLOUD_URL"),
+            "webdav_login": os.environ.get("NEXTCLOUD_USERNAME"),
+            "webdav_password": os.environ.get("NEXTCLOUD_PASSWORD")
+        })
 
     @property
     def job_progress_fmt(self):

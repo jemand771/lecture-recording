@@ -45,6 +45,9 @@ def enqueue_job():
     )
     driver = JumpcutterDriver(str(file), params)
     driver.progress_hooks.append(DiscordHook(os.environ.get("DISCORD_WEBHOOK")))
+    if not request.form.get("course"):
+        return display_error("no course was selected :(")
+    driver.module_dir = request.form.get("course")
     DRIVERS.append((
         {
             "id": str(uuid.uuid4()),
@@ -105,10 +108,10 @@ def worker_func():
                 DRIVERS.remove((info, driver))
             if info["work_until"] > driver.current_job:
                 driver.do_work()
-        time.sleep(1)
+        time.sleep(0.1)
 
 
 if __name__ == '__main__':
     INPUT_DIR.mkdir(exist_ok=True, parents=True)
-    threading.Thread(target=worker_func).start()
+    threading.Thread(target=worker_func, daemon=True).start()
     app.run(host="0.0.0.0", port=5000, debug=True)
