@@ -289,13 +289,16 @@ class ProgressHook:
 
 
 class JumpcutterDriver(Jumpcutter):
-    progress_hooks = []
-    job_progress = [None] * 8
     current_job = -1
     full_length = None
     done = False
-    _data = {}
     module_dir = None
+
+    def __init__(self, *args, **kwargs):
+        self.progress_hooks = []
+        self.job_progress = [None] * 8
+        self._data = {}
+        super().__init__(*args, **kwargs)
 
     # TODO notify for "nothing" before anything happens
     def notify_progress(self, *args, **kwargs):
@@ -410,8 +413,10 @@ class JumpcutterDriver(Jumpcutter):
 
 class DiscordHook(ProgressHook):
 
-    def __init__(self, webhook_url):
+    def __init__(self, webhook_url, title, course):
         self.hook = DiscordWebhook(webhook_url)
+        self.title = title
+        self.course = course
         self.sent = None
         self.last_sent = 0.0
 
@@ -431,7 +436,8 @@ class DiscordHook(ProgressHook):
         return False
 
     def build_embed(self, progress_info):
-        embed = DiscordEmbed(title="title lol")
+        embed = DiscordEmbed(title=self.title)
+        embed.set_author(name=self.course)
         # TODO add file sizes, compression ratio?
         embed.add_embed_field(name="Original", value=self.format_duration(self.len_orig))
         embed.add_embed_field(name="Jumpcut", value=self.format_duration(self.len_new))

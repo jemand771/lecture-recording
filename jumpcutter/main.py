@@ -43,14 +43,19 @@ def enqueue_job():
         frame_rate=float(request.form.get("param-fps")),
         sample_rate=int(request.form.get("param-sps"))
     )
-    driver = JumpcutterDriver(str(file), params)
-    driver.progress_hooks.append(DiscordHook(os.environ.get("DISCORD_WEBHOOK")))
     if not request.form.get("course"):
         return display_error("no course was selected :(")
+    driver = JumpcutterDriver(str(file), params)
+    driver.progress_hooks.append(DiscordHook(
+        webhook_url=os.environ.get("DISCORD_WEBHOOK"),
+        title=file.name,
+        course=request.form.get("course")
+    ))
     driver.module_dir = request.form.get("course")
     DRIVERS.append((
         {
             "id": str(uuid.uuid4()),
+            "course": request.form.get("course"),
             "work_until": -1
         }, driver)
     )
@@ -86,6 +91,8 @@ def get_file_info(path):
 def get_job(info, driver: JumpcutterDriver):
     return {
         "id": info["id"],
+        "course": info["course"],
+        "current_step": driver.current_job,
         "file": get_file_info(pathlib.Path(driver._input_file)),
         "work_until": info["work_until"]
     }
@@ -108,10 +115,10 @@ def worker_func():
                 DRIVERS.remove((info, driver))
             if info["work_until"] > driver.current_job:
                 driver.do_work()
-        time.sleep(0.1)
+        time.sleep(1)
 
 
 if __name__ == '__main__':
     INPUT_DIR.mkdir(exist_ok=True, parents=True)
     threading.Thread(target=worker_func, daemon=True).start()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
