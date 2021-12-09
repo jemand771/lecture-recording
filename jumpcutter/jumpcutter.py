@@ -279,6 +279,8 @@ class ProgressHook:
     ]
     len_orig = None
     len_new = None
+    size_orig = None
+    size_new = None
 
     def _progress(self, progress_info):
         pass
@@ -332,6 +334,10 @@ class JumpcutterDriver(Jumpcutter):
         )
         return round(float(result.stdout) * 1000)
 
+    @staticmethod
+    def get_size(input_file):
+        return os.path.getsize(input_file)
+
     def do_work(self):
         # this whole function is really fucking ugly but how else am I supposed to
         # transform my fancy stateless class into this stateful mess?
@@ -341,6 +347,7 @@ class JumpcutterDriver(Jumpcutter):
             self.full_length = self.get_length(self._input_file)
             for hook in self.progress_hooks:
                 hook.len_orig = self.full_length
+                hook.size_orig = self.get_size(self._input_file)
             self.remux_input_video()
         elif self.current_job == 0:
             self.split_input_video()
@@ -358,6 +365,8 @@ class JumpcutterDriver(Jumpcutter):
             for hook in self.progress_hooks:
                 hook.len_new = self.full_length
             self.render_output()
+            for hook in self.progress_hooks:
+                hook.size_new = self.get_size(self._temp / self._input_to_output(self._input_file))
         elif self.current_job == 5:
             self.do_upload(pathlib.Path(self._input_file))
         elif self.current_job == 6:
@@ -436,14 +445,28 @@ class DiscordHook(ProgressHook):
         return False
 
     def build_embed(self, progress_info):
-        embed = DiscordEmbed(title=self.title)
-        embed.set_author(name=self.course)
-        # TODO add file sizes, compression ratio?
-        embed.add_embed_field(name="Original", value=self.format_duration(self.len_orig))
-        embed.add_embed_field(name="Jumpcut", value=self.format_duration(self.len_new))
+        embed = DiscordEmbed()
+        embed.add_embed_field(name="File", value=self.title)
+        embed.add_embed_field(name="Course", value=self.course),
+        embed.add_embed_field(name="_ _", value="_ _")
+        embed.add_embed_field(name="Original length", value=self.format_duration(self.len_orig))
+        embed.add_embed_field(name="Jumpcut length", value=self.format_duration(self.len_new))
+        embed.add_embed_field(name="Length ratio", value=self.ratio(self.len_new, self.len_orig))
+        embed.add_embed_field(name="Original size", value=self.format_size(self.size_orig))
+        embed.add_embed_field(name="Jumpcut size", value=self.format_size(self.size_new))
+        embed.add_embed_field(name="Size ratio", value=self.ratio(self.size_new, self.size_orig))
         embed.add_embed_field(name="Progress", value=self.build_progress_content(progress_info), inline=False)
         embed.set_color(self.get_color([x["percentage"] for x in progress_info]))
+        embed.set_timestamp()
+        embed.set_footer(text="Live Status")
         return embed
+
+    @staticmethod
+    def ratio(part, total):
+        if part is None or total is None:
+            return "N/A"
+        r = float(100 * part) / float(total)
+        return f"{round(r)}%"
 
     @staticmethod
     def get_color(percentages):
@@ -474,6 +497,16 @@ class DiscordHook(ProgressHook):
         if duration is None:
             return "N/A"
         return time.strftime("%H:%M:%S", time.gmtime(round(duration / 1000)))
+
+    @staticmethod
+    def format_size(size):
+        if size is None:
+            return "N/A"
+        for unit in ["", "K", "M", "G"]:
+            if abs(size) < 1024.0:
+                return f"{size:.1f} {unit}iB"
+            size /= 1024
+        return "N/A"
 
     def execute(self, embed):
         self.hook.embeds.clear()
