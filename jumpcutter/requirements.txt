@@ -3,3 +3,4 @@ discord-webhook
 flask
 numpy
 scipy
+webdavclient3

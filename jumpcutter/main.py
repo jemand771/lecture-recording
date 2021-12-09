@@ -118,7 +118,9 @@ def worker_func():
         time.sleep(1)
 
 
+INPUT_DIR.mkdir(exist_ok=True, parents=True)
+threading.Thread(target=worker_func, daemon=True).start()
+
+
 if __name__ == '__main__':
-    INPUT_DIR.mkdir(exist_ok=True, parents=True)
-    threading.Thread(target=worker_func, daemon=True).start()
     app.run(host="0.0.0.0", port=5000, debug=True, use_reloader=False)
