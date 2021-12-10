@@ -15,10 +15,11 @@ DRIVERS = []
 
 @app.get("/")
 def landing_page():
+    # noinspection PyProtectedMember
     return render_template(
         "home.html",
-        files=get_input_files(),
-        jobs=[get_job(*x) for x in DRIVERS]
+        files=sorted(get_input_files(), key=str),
+        jobs=(get_job(*x) for x in DRIVERS)
     )
 
 
