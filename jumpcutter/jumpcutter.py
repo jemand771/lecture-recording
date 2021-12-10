@@ -6,6 +6,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 import time
 
+import requests
 from audiotsm import phasevocoder
 from audiotsm.io.wav import WavReader, WavWriter
 from discord_webhook import DiscordEmbed, DiscordWebhook
@@ -286,8 +287,12 @@ class ProgressHook:
         pass
 
     def progress(self, progress_info):
-        self.last_progress = progress_info
-        return self._progress(progress_info)
+        try:
+            result = self._progress(progress_info)
+            self.last_progress = progress_info
+            return result
+        except requests.exceptions.ConnectionError as ex:
+            print("discord moment")
 
 
 class JumpcutterDriver(Jumpcutter):
