@@ -112,10 +112,10 @@ def worker_func():
     while True:
         for info, driver in DRIVERS:
             driver: JumpcutterDriver
+            while info["work_until"] > driver.current_job and not driver.done:
+                driver.do_work()
             if driver.done:
                 DRIVERS.remove((info, driver))
-            if info["work_until"] > driver.current_job:
-                driver.do_work()
         time.sleep(1)
 
 
