@@ -12,4 +12,3 @@ RUN echo "?package(bash):needs=\"X11\" section=\"DockerCustom\" title=\"OBS Scre
 
 ENV TZ=Europe/Berlin
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
-USER dockerUser
